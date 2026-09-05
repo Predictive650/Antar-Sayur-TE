@@ -1,0 +1,1264 @@
+<!doctype html>
+<html lang="id">
+ <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pasar Tanjung Enim - Live Version</title>
+  <!-- Leaflet CSS untuk Peta -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <!-- Firebase (untuk menghubungkan data pelanggan-kurir-owner secara real-time antar HP) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Inter', -apple-system, sans-serif; background: #FAF6EB; }
+  button { font-family: inherit; cursor: pointer; }
+  button:active { transform: scale(0.97); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+  input, select { font-family: inherit; }
+  input:focus, button:focus, select:focus { outline: none; }
+  #map { width: 100%; height: 200px; border-radius: 12px; margin-bottom: 12px; z-index: 1; }
+</style>
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+ </head>
+ <body>
+  <div id="root"></div>
+  <script>
+"use strict";
+
+// ================== KONEKSI FIREBASE (WAJIB DIISI) ==================
+// Aplikasi ini butuh database gratis di Firebase supaya data pelanggan,
+// kurir, dan owner benar-benar terhubung walau dibuka dari HP berbeda.
+// Cara mendapatkan config di bawah ini (gratis, +-5 menit):
+//   1. Buka https://console.firebase.google.com -> "Add project" (kasih nama bebas, mis. "pasar-tanjung-enim")
+//   2. Di dalam project, klik ikon "</> Web" untuk daftarkan aplikasi web baru
+//   3. Copy object "firebaseConfig" yang muncul, tempel menggantikan object di bawah ini
+//   4. Di menu kiri klik "Build" -> "Realtime Database" -> "Create Database" -> pilih lokasi -> mode "Test mode" (untuk mulai cepat)
+//   5. Simpan file ini, upload ulang / buka lagi -> aplikasi otomatis tersambung
+// PENTING: "Test mode" artinya siapa saja bisa baca/tulis data ini. Aman untuk
+// tahap uji coba, tapi sebelum dipakai serius sebaiknya diperketat aturannya
+// (tanya lagi ke Claude kalau sudah sampai tahap itu).
+var firebaseConfig = {
+  apiKey: "GANTI_DENGAN_API_KEY_ANDA",
+  authDomain: "GANTI_DENGAN_AUTH_DOMAIN_ANDA",
+  databaseURL: "GANTI_DENGAN_DATABASE_URL_ANDA",
+  projectId: "GANTI_DENGAN_PROJECT_ID_ANDA",
+  storageBucket: "GANTI_DENGAN_STORAGE_BUCKET_ANDA",
+  messagingSenderId: "GANTI_DENGAN_SENDER_ID_ANDA",
+  appId: "GANTI_DENGAN_APP_ID_ANDA"
+};
+var firebaseReady = firebaseConfig.apiKey.indexOf("GANTI_DENGAN") === -1;
+var fbRef = null;
+if (firebaseReady) {
+  firebase.initializeApp(firebaseConfig);
+  fbRef = firebase.database().ref("tanjungEnimShared");
+}
+// ======================================================================
+
+var COLORS = {
+  bg: "#FAF6EB",
+  ink: "#24301F",
+  primary: "#2F5233",
+  accent: "#E0A527",
+  card: "#FFFDF6",
+  line: "#E4DCC4",
+  muted: "#8A8570",
+  text: "#3A3A2E",
+};
+
+var ZONE_INFO = {
+  1: { label: "Zona 1 (Kecamatan Lawang Kidul / Tanjung Enim Kota)", short: "Zona 1", fee: 2000, color: "#2F5233" },
+  2: { label: "Zona 2 (Lingga / Karang Asam)", short: "Zona 2", fee: 5000, color: "#8A6D1F" },
+  3: { label: "Zona 3 (Tanjung Enim Luar / Lingkungan Tambang)", short: "Zona 3", fee: 8000, color: "#B5651D" },
+};
+
+var STATUS_LABEL = {
+  menunggu_kurir: "Menunggu Kurir",
+  sedang_belanja: "Sedang Belanja",
+  diantar: "Diantar Kurir",
+  selesai: "Selesai",
+};
+var STATUS_COLOR = {
+  menunggu_kurir: "#9C3B1F",
+  sedang_belanja: "#8A6D1F",
+  diantar: "#1F5C8B",
+  selesai: "#2F5233",
+};
+
+// ---- Data BERSAMA: harus sama persis di semua HP (pelanggan, kurir, owner) ----
+// Disimpan & disinkronkan lewat Firebase supaya "terhubung" antar device.
+var defaultShared = {
+  items: [
+    { id: "telur", nama: "Telur ayam ras", satuan: "kg", harga: 29000 },
+    { id: "bayam", nama: "Bayam segar", satuan: "ikat", harga: 4000 },
+    { id: "cabai", nama: "Cabai merah keriting", satuan: "kg", harga: 62000 },
+    { id: "ikan", nama: "Ikan nila fresh", satuan: "kg", harga: 34000 },
+    { id: "tahu", nama: "Tahu putih pasar", satuan: "papan", harga: 3000 },
+    { id: "tempe", nama: "Tempe daun", satuan: "papan", harga: 5000 },
+  ],
+  orders: [
+    { id: "TE-501", pelanggan: "Ibu Siti", pelangganTelepon: "", alamat: "Komp. BTN Air Pakik, Tanjung Enim", zona: 1, lat: -3.755, lng: 103.792,
+      items: [{ nama: "Tahu putih pasar", qty: "5 papan" }], total: 17000, status: "selesai", kurir: "Adi Kurir", chat: [] },
+  ],
+  komisiRiwayat: [
+    { id: "TE-501", pelanggan: "Ibu Siti", kurir: "Adi Kurir", komisi: 1020, dibayar: true },
+  ],
+  kurirAkun: [
+    { nama: "Kurir 1", pin: "111111", aktif: true, telepon: "" },
+    { nama: "Kurir 2", pin: "222222", aktif: true, telepon: "" }
+  ],
+};
+
+// ---- Data LOKAL: hanya untuk HP ini (layar yang sedang dibuka, keranjang, dll) ----
+var defaultLocal = {
+  role: null,
+  currentUser: null,
+  cart: {},
+  pelangganScreen: "menu",
+  zona: 1,
+  selectedLat: -3.7539,
+  selectedLng: 103.7972,
+  lastOrderId: null,
+  kurirAktif: true,
+  kurirTab: "order",
+  checked: {},
+  ownerTab: "ringkasan",
+  ownerDraftItems: null,
+  ownerSaved: true,
+  showChat: {},
+  chatDraft: {},
+  checkoutTelepon: "",
+};
+
+var shared = JSON.parse(JSON.stringify(defaultShared));
+var state = JSON.parse(localStorage.getItem('tanjung_enim_local')) || JSON.parse(JSON.stringify(defaultLocal));
+// Isi field baru yang mungkin belum ada di data lokal lama milik user
+Object.keys(defaultLocal).forEach(function (k) { if (state[k] === undefined) state[k] = defaultLocal[k]; });
+
+function saveState() {
+  localStorage.setItem('tanjung_enim_local', JSON.stringify(state));
+}
+
+// Menulis data bersama ke Firebase supaya semua HP lain langsung melihat perubahan.
+// (kalau Firebase belum dikonfigurasi, ya sudah tetap tersimpan lokal saja - lihat pesan di layar)
+function saveShared() {
+  if (firebaseReady && fbRef) {
+    fbRef.set(shared);
+  } else {
+    localStorage.setItem('tanjung_enim_shared_fallback', JSON.stringify(shared));
+  }
+  render();
+}
+
+function startSharedSync() {
+  if (firebaseReady && fbRef) {
+    fbRef.on("value", function (snapshot) {
+      var val = snapshot.val();
+      if (!val) {
+        // Belum ada data di Firebase sama sekali -> isi dengan default sekali di awal
+        fbRef.set(shared);
+        return;
+      }
+      Object.keys(defaultShared).forEach(function (k) { if (val[k] === undefined) val[k] = defaultShared[k]; });
+      shared = val;
+      render();
+    });
+  } else {
+    shared = JSON.parse(localStorage.getItem('tanjung_enim_shared_fallback')) || JSON.parse(JSON.stringify(defaultShared));
+  }
+}
+
+function rupiah(n) {
+  return "Rp" + Math.round(n).toLocaleString("id-ID");
+}
+
+function haversineKm(lat1, lng1, lat2, lng2) {
+  var R = 6371;
+  var dLat = (lat2 - lat1) * Math.PI / 180;
+  var dLng = (lng2 - lng1) * Math.PI / 180;
+  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function computeCartTotals() {
+  var items = shared.items, cart = state.cart;
+  var cartList = items.filter(function (it) { return cart[it.id] > 0; });
+  var subtotal = cartList.reduce(function (s, it) { return s + it.harga * cart[it.id]; }, 0);
+  var isOutOfZone = state.zona === null;
+  var ongkir = isOutOfZone ? 0 : ZONE_INFO[state.zona].fee;
+  var total = subtotal + ongkir;
+  return { cartList: cartList, subtotal: subtotal, isOutOfZone: isOutOfZone, ongkir: ongkir, total: total };
+}
+
+function renderZonaButtonsHtml() {
+  return Object.keys(ZONE_INFO).map(function (z) {
+    var info = ZONE_INFO[z];
+    var active = Number(z) === state.zona;
+    return '<button onclick="setZona(' + z + ')" style="flex:1;padding:8px 4px;border-radius:8px;font-size:11px;font-weight:600;border:1px solid ' + (active ? info.color : COLORS.line) + ';background:' + (active ? info.color + "1A" : COLORS.card) + ';color:' + (active ? info.color : COLORS.muted) + ';">' + info.short + "</button>";
+  }).join("");
+}
+
+function renderWarningZonaHtml(isOutOfZone) {
+  return isOutOfZone
+    ? '<div style="padding:10px;background:#FDE8E8;color:#9C3B1F;border-radius:8px;font-size:12px;font-weight:600;margin-bottom:12px;text-align:center;">Lokasi di luar Zona 3! Order tidak dapat diproses. Harap pilih titik dalam zona pengantaran.</div>'
+    : "";
+}
+
+// Memperbarui bagian dinamis layar checkout TANPA menghancurkan peta (mencegah peta reset/kedip)
+function refreshCheckoutUI() {
+  var t = computeCartTotals();
+  var warningEl = document.getElementById("checkout-warning");
+  if (warningEl) warningEl.innerHTML = renderWarningZonaHtml(t.isOutOfZone);
+  var zonaEl = document.getElementById("checkout-zona");
+  if (zonaEl) zonaEl.innerHTML = renderZonaButtonsHtml();
+  var ongkirLabelEl = document.getElementById("sum-ongkir-label");
+  if (ongkirLabelEl) ongkirLabelEl.textContent = "Ongkir (" + (t.isOutOfZone ? "Luar Zona" : ZONE_INFO[state.zona].short) + ")";
+  var ongkirValEl = document.getElementById("sum-ongkir-value");
+  if (ongkirValEl) ongkirValEl.textContent = t.isOutOfZone ? "-" : rupiah(t.ongkir);
+  var totalValEl = document.getElementById("sum-total-value");
+  if (totalValEl) totalValEl.textContent = rupiah(t.total);
+  var btn = document.getElementById("checkout-confirm-btn");
+  if (btn) btn.disabled = (t.cartList.length === 0 || t.isOutOfZone);
+}
+
+// ---- Pelacakan lokasi kurir <-> pelanggan ----
+var statusMapInstance = null;
+var statusPollInterval = null;
+var kurirMapInstance = null;
+
+function clearStatusPolling() {
+  if (statusPollInterval) {
+    clearInterval(statusPollInterval);
+    statusPollInterval = null;
+  }
+}
+
+var ICON_PATHS = {
+  ShoppingCart: '<circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 2-1.58l1.65-7.42H5.12"/>',
+  Plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+  Minus: '<path d="M5 12h14"/>',
+  ArrowLeft: '<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>',
+  User: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  Bike: '<circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><path d="M15 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"/><path d="M12 17.5V14l-3-3 4-3 2 3h2"/>',
+  LayoutGrid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>',
+  Tag: '<path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42Z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
+  Radar: '<path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62A10 10 0 1 0 21.31 8.35"/><path d="M16.24 7.76A6 6 0 1 0 8.23 16.67"/><path d="M12 18h.01"/><circle cx="12" cy="12" r="2"/>',
+  Wallet: '<path d="M21 12V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-1"/><path d="M17 14a2 2 0 0 1 0-4h4v4Z"/>',
+  TrendingUp: '<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>',
+  Save: '<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7H7v7"/><path d="M7 3v4h8"/>',
+  MapPin: '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>',
+  Check: '<path d="M20 6 9 17l-5-5"/>',
+  Package: '<path d="M16.5 9.4 7.55 4.24"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><polyline points="3.29 7 12 12 20.71 7"/><line x1="12" y1="22" x2="12" y2="12"/>',
+  CheckCircle2: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+  Clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  Navigation: '<polygon points="3 11 22 2 13 21 11 13 3 11"/>',
+  Power: '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>',
+  ShoppingBasket: '<path d="m15 11-1 9"/><path d="m19 11-4-7"/><path d="M2 11h20"/><path d="m3.5 11 1.6 7.4a2 2 0 0 0 2 1.6h9.8a2 2 0 0 0 2-1.6l1.7-7.4"/><path d="m5 11 4-7"/><path d="m9 11 1 9"/>',
+  Store: '<path d="M2 7h20l-1.5 4.5A2 2 0 0 1 18.6 13H5.4a2 2 0 0 1-1.9-1.5Z"/><path d="M4 13v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6"/><path d="M9 21v-5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v5"/><path d="M2 7l1-4h18l1 4"/>',
+  LogOut: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>'
+};
+
+function icon(name, opts) {
+  opts = opts || {};
+  var size = opts.size || 16;
+  var color = opts.color || "currentColor";
+  var style = opts.style || "";
+  var cls = opts.cls || "";
+  return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="' + color +
+    '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="' + cls + '" style="display:inline-block;vertical-align:middle;flex-shrink:0;' + style + '">' +
+    (ICON_PATHS[name] || "") + "</svg>";
+}
+
+function badge(text, color) {
+  return '<span style="display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;background:' + color + '1A;color:' + color + ';">' + text + "</span>";
+}
+
+function card(inner, extraStyle) {
+  extraStyle = extraStyle || "";
+  return '<div style="background:' + COLORS.card + ';border:1px solid ' + COLORS.line + ';border-radius:12px;box-shadow:0 2px 8px rgba(36,48,31,0.06);' + extraStyle + '">' + inner + "</div>";
+}
+
+function topBar(title, subtitle, showBack, accentBg, backFn) {
+  backFn = backFn || "goBack()";
+  var backBtn = showBack
+    ? '<button onclick="' + backFn + '" style="background:none;border:none;padding:0;margin-right:12px;color:rgba(255,255,255,0.85);display:flex;">' + icon("ArrowLeft", { size: 20, color: "currentColor" }) + "</button>"
+    : "";
+  var logoutBtn = '<button onclick="logout()" title="Keluar Akun" style="background:none;border:none;padding:4px;margin-left:auto;color:rgba(255,255,255,0.85);display:flex;">' + icon("LogOut", { size: 18 }) + '</button>';
+  return (
+    '<div style="padding:20px 16px 16px 16px;display:flex;align-items:center;gap:12px;background:' + accentBg + ';">' +
+      backBtn +
+      '<div style="flex:1;">' +
+        '<p style="font-size:11px;color:rgba(255,255,255,0.6);letter-spacing:0.05em;text-transform:uppercase;margin:0;">' + subtitle + "</p>" +
+        '<h1 style="color:#fff;font-size:19px;font-weight:600;font-family:\'Fraunces\',serif;margin:2px 0 0 0;">' + title + "</h1>" +
+      "</div>" +
+      logoutBtn +
+    "</div>"
+  );
+}
+
+var ACCESS_CODES = {
+  owner: "987654321"
+};
+var OWNER_IDENTITY_NAME = "budisetia";
+
+var loginSelectedRole = "pelanggan";
+
+function selectLoginRole(role) {
+  loginSelectedRole = role;
+  render();
+}
+
+function renderRoleSelector() {
+  var isStaff = loginSelectedRole === "kurir" || loginSelectedRole === "owner";
+  var staffLabel = loginSelectedRole === "kurir" ? "Kurir (Mitra Pengantar)" : "Owner (Pengelola Pasar)";
+
+  var mainCard;
+  if (!isStaff) {
+    mainCard = card(
+      '<div style="padding:24px 20px;">' +
+        '<div style="text-align:center;margin-bottom:18px;">' +
+          '<div style="width:56px;height:56px;border-radius:50%;background:' + COLORS.primary + '1A;display:flex;align-items:center;justify-content:center;margin:0 auto 10px auto;color:' + COLORS.primary + ';">' + icon("ShoppingBasket", { size: 28 }) + "</div>" +
+          '<h2 style="font-size:17px;font-weight:600;font-family:\'Fraunces\',serif;margin:0;color:' + COLORS.ink + ';">Belanja sebagai Pelanggan</h2>' +
+        "</div>" +
+        '<label style="font-size:12px;font-weight:600;color:' + COLORS.muted + ';display:block;margin-bottom:6px;">Nama Anda:</label>' +
+        '<input type="text" id="login-name" placeholder="Contoh: Ibu Siti" style="width:100%;padding:12px;border-radius:8px;border:1px solid ' + COLORS.line + ';background:#fff;font-size:15px;margin-bottom:16px;color:' + COLORS.ink + ';" />' +
+        '<button onclick="processLogin()" style="width:100%;padding:16px;border-radius:10px;border:none;font-size:16px;font-weight:700;background:' + COLORS.primary + ';color:#fff;">Masuk Aplikasi</button>' +
+      "</div>",
+      "padding:4px;"
+    );
+  } else {
+    mainCard = card(
+      '<div style="padding:20px;">' +
+        '<button onclick="selectLoginRole(\'pelanggan\')" style="background:none;border:none;padding:0;margin-bottom:14px;color:' + COLORS.muted + ';font-size:12px;display:flex;align-items:center;gap:4px;">' + icon("ArrowLeft", { size:14 }) + ' Kembali</button>' +
+        '<div style="text-align:center;margin-bottom:16px;">' +
+          '<div style="width:44px;height:44px;border-radius:50%;background:' + COLORS.ink + '1A;display:flex;align-items:center;justify-content:center;margin:0 auto 8px auto;color:' + COLORS.ink + ';">' + icon(loginSelectedRole === "kurir" ? "Bike" : "Store", { size: 22 }) + "</div>" +
+          '<h2 style="font-size:15px;font-weight:600;font-family:\'Fraunces\',serif;margin:0;color:' + COLORS.ink + ';">Masuk sebagai ' + staffLabel + '</h2>' +
+        "</div>" +
+        '<label style="font-size:12px;font-weight:600;color:' + COLORS.muted + ';display:block;margin-bottom:6px;">Nama / Identitas:</label>' +
+        '<input type="text" id="login-name" placeholder="Nama Anda" style="width:100%;padding:10px;border-radius:8px;border:1px solid ' + COLORS.line + ';background:#fff;font-size:14px;margin-bottom:12px;color:' + COLORS.ink + ';" />' +
+        '<label style="font-size:12px;font-weight:600;color:' + COLORS.muted + ';display:block;margin-bottom:6px;">' + (loginSelectedRole === "kurir" ? "PIN Kurir Anda:" : "Kode Akses Owner:") + '</label>' +
+        '<input type="password" id="login-code" placeholder="' + (loginSelectedRole === "kurir" ? "PIN yang diberikan owner" : "Masukkan kode akses") + '" style="width:100%;padding:10px;border-radius:8px;border:1px solid ' + COLORS.line + ';background:#fff;font-size:14px;margin-bottom:16px;letter-spacing:0.1em;color:' + COLORS.ink + ';" />' +
+        '<button onclick="processLogin()" style="width:100%;padding:12px;border-radius:8px;border:none;font-size:14px;font-weight:600;background:' + COLORS.ink + ';color:#fff;">Masuk Aplikasi</button>' +
+      "</div>",
+      "padding:4px;"
+    );
+  }
+
+  var cornerButtons = "";
+  if (!isStaff) {
+    cornerButtons =
+      '<button onclick="selectLoginRole(\'owner\')" style="position:fixed;left:14px;bottom:14px;background:none;border:none;padding:6px 8px;color:' + COLORS.muted + ';font-size:11px;display:flex;align-items:center;gap:4px;opacity:0.75;">' + icon("Store", { size: 13 }) + ' Owner</button>' +
+      '<button onclick="selectLoginRole(\'kurir\')" style="position:fixed;right:14px;bottom:14px;background:none;border:none;padding:6px 8px;color:' + COLORS.muted + ';font-size:11px;display:flex;align-items:center;gap:4px;opacity:0.75;">' + icon("Bike", { size: 13 }) + ' Kurir</button>';
+  }
+
+  var firebaseWarning = firebaseReady ? "" :
+    '<div style="padding:10px 14px;background:#FDE8E8;color:#9C3B1F;border-radius:8px;font-size:11px;margin-bottom:16px;text-align:center;">' +
+      '&#9888; Belum tersambung ke database bersama. Data pelanggan/kurir/owner <b>hanya tersimpan di HP ini saja</b>. ' +
+      'Isi <code>firebaseConfig</code> di bagian atas kode untuk menghubungkan semua HP secara real.' +
+    '</div>';
+
+  return (
+    '<div style="min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:0 24px;background:' + COLORS.bg + ';position:relative;">' +
+      '<div style="text-align:center;margin-bottom:24px;">' +
+        '<p style="font-size:12px;letter-spacing:0.15em;text-transform:uppercase;margin:0 0 4px 0;color:' + COLORS.muted + ';">Pasar Tanjung Enim Live</p>' +
+        '<h1 style="font-size:22px;font-weight:600;font-family:\'Fraunces\',serif;margin:0;color:' + COLORS.ink + ';">Selamat Datang</h1>' +
+      "</div>" +
+      firebaseWarning +
+      mainCard +
+      cornerButtons +
+    "</div>"
+  );
+}
+
+function processLogin() {
+  var role = loginSelectedRole;
+  var nameEl = document.getElementById("login-name");
+  var name = nameEl ? nameEl.value.trim() : "";
+  if (!name) {
+    alert("Mohon masukkan nama atau identitas terlebih dahulu.");
+    return;
+  }
+
+  if (role === "kurir") {
+    var codeEl = document.getElementById("login-code");
+    var code = codeEl ? codeEl.value.trim() : "";
+    var akun = shared.kurirAkun.filter(function (k) {
+      return k.nama.trim().toLowerCase() === name.toLowerCase() && k.pin === code;
+    })[0];
+    if (!akun) {
+      alert("Nama atau PIN kurir tidak dikenali. Silakan cek kembali ke owner pasar.");
+      return;
+    }
+    if (!akun.aktif) {
+      alert("Akun kurir ini sudah dinonaktifkan. Hubungi owner pasar.");
+      return;
+    }
+  } else if (role === "owner") {
+    var ownerCodeEl = document.getElementById("login-code");
+    var ownerCode = ownerCodeEl ? ownerCodeEl.value.trim() : "";
+    if (ownerCode !== ACCESS_CODES.owner) {
+      alert("Kode akses salah. Silakan coba lagi.");
+      return;
+    }
+    if (name.toLowerCase() !== OWNER_IDENTITY_NAME) {
+      alert("Identitas owner tidak dikenali. Masukkan nama identitas owner yang benar.");
+      return;
+    }
+  }
+
+  state.role = role;
+  state.currentUser = name;
+  if (role === "owner" && !state.ownerDraftItems) {
+    state.ownerDraftItems = JSON.parse(JSON.stringify(shared.items));
+    state.ownerSaved = true;
+  }
+  loginSelectedRole = "pelanggan";
+  saveState();
+  render();
+}
+
+function logout() {
+  state.role = null;
+  state.currentUser = null;
+  saveState();
+  render();
+}
+
+function updateZonaOtomatis(lat, lng) {
+  var pusatLat = -3.7539;
+  var pusatLng = 103.7972;
+  var jarak = Math.sqrt(Math.pow(lat - pusatLat, 2) + Math.pow(lng - pusatLng, 2));
+  if (jarak < 0.02) {
+    state.zona = 1;
+  } else if (jarak < 0.05) {
+    state.zona = 2;
+  } else if (jarak <= 0.08) {
+    state.zona = 3;
+  } else {
+    state.zona = null; // Di luar Zona 3 (Tidak bisa diproses)
+  }
+  saveState();
+}
+
+// Fungsi deteksi lokasi otomatis via GPS perangkat
+function deteksiLokasiGPS() {
+  if (!navigator.geolocation) {
+    alert("Perangkat Anda tidak mendukung fitur deteksi lokasi otomatis.");
+    return;
+  }
+  alert("Mendeteksi lokasi Anda...");
+  navigator.geolocation.getCurrentPosition(function(position) {
+    var lat = position.coords.latitude;
+    var lng = position.coords.longitude;
+    state.selectedLat = lat;
+    state.selectedLng = lng;
+    updateZonaOtomatis(lat, lng);
+    if (mapInstance) {
+      mapInstance.setView([lat, lng], 15);
+      // Update marker position
+      mapInstance.eachLayer(function(layer) {
+        if (layer instanceof L.Marker) {
+          layer.setLatLng([lat, lng]);
+        }
+      });
+    }
+    saveState();
+    refreshCheckoutUI();
+  }, function(error) {
+    alert("Gagal mendeteksi lokasi. Pastikan GPS aktif dan izin lokasi diizinkan.");
+  }, { enableHighAccuracy: true });
+}
+
+// Kotak komunikasi (telepon/WA + chat) antara pelanggan <-> kurir untuk satu order.
+// myRole: "pelanggan" atau "kurir". otherNama/otherTelepon: lawan bicara.
+function renderCommsBox(order, myRole, myNama, otherNama, otherTelepon) {
+  var teleponDigit = normalizeTelepon(otherTelepon);
+  var callButtons = teleponDigit
+    ? '<div style="display:flex;gap:8px;margin-bottom:10px;">' +
+        '<a href="tel:+' + teleponDigit + '" style="flex:1;text-align:center;padding:10px;border-radius:8px;border:1px solid ' + COLORS.primary + ';background:#fff;color:' + COLORS.primary + ';font-size:12px;font-weight:600;text-decoration:none;">&#128222; Telepon ' + otherNama + '</a>' +
+        '<a href="https://wa.me/' + teleponDigit + '" target="_blank" style="flex:1;text-align:center;padding:10px;border-radius:8px;border:none;background:#25D366;color:#fff;font-size:12px;font-weight:600;text-decoration:none;">&#128172; WhatsApp</a>' +
+      '</div>'
+    : '<p style="font-size:11px;margin:0 0 10px 0;color:' + COLORS.muted + ';">Nomor ' + otherNama + ' belum tersedia untuk telepon/WA.</p>';
+
+  var chatOpen = !!(state.showChat && state.showChat[order.id]);
+  var chatToggleBtn = '<button onclick="toggleChatBox(\'' + order.id + '\')" style="width:100%;padding:10px;border-radius:8px;border:1px dashed ' + COLORS.line + ';background:#fff;color:' + COLORS.ink + ';font-size:12px;font-weight:600;margin-bottom:' + (chatOpen ? "10px" : "0") + ';">' + (chatOpen ? "Tutup Chat" : "Buka Chat dengan " + otherNama) + '</button>';
+
+  var chatPanel = "";
+  if (chatOpen) {
+    var pesanList = (order.chat || []).map(function (m) {
+      var mine = m.role === myRole;
+      return '<div style="display:flex;justify-content:' + (mine ? "flex-end" : "flex-start") + ';margin-bottom:6px;">' +
+        '<div style="max-width:75%;padding:8px 10px;border-radius:10px;font-size:12px;background:' + (mine ? COLORS.primary : "#F0EBDA") + ';color:' + (mine ? "#fff" : COLORS.ink) + ';">' +
+          (mine ? "" : '<p style="margin:0 0 2px 0;font-size:10px;font-weight:700;opacity:0.7;">' + m.nama + '</p>') +
+          '<p style="margin:0;">' + m.teks.replace(/</g, "&lt;") + '</p>' +
+        '</div>' +
+      '</div>';
+    }).join("");
+    var draftVal = (state.chatDraft && state.chatDraft[order.id]) || "";
+    chatPanel =
+      '<div style="border:1px solid ' + COLORS.line + ';border-radius:10px;padding:10px;background:' + COLORS.bg + ';">' +
+        '<div style="max-height:180px;overflow-y:auto;margin-bottom:8px;">' +
+          (pesanList || '<p style="font-size:11px;text-align:center;color:' + COLORS.muted + ';">Belum ada pesan. Mulai chat di bawah.</p>') +
+        '</div>' +
+        '<div style="display:flex;gap:6px;">' +
+          '<input type="text" id="chat-input-' + order.id + '" value="' + draftVal.replace(/"/g, "&quot;") + '" oninput="updateChatDraft(\'' + order.id + '\', this.value)" onkeydown="if(event.key===\'Enter\'){kirimChat(\'' + order.id + '\',\'' + myRole + '\',\'' + myNama.replace(/'/g, "") + '\');}" placeholder="Tulis pesan..." style="flex:1;padding:8px;border-radius:6px;border:1px solid ' + COLORS.line + ';font-size:12px;" />' +
+          '<button onclick="kirimChat(\'' + order.id + '\',\'' + myRole + '\',\'' + myNama.replace(/'/g, "") + '\')" style="padding:8px 12px;border-radius:6px;border:none;background:' + COLORS.primary + ';color:#fff;font-size:12px;font-weight:600;">Kirim</button>' +
+        '</div>' +
+      '</div>';
+  }
+
+  return callButtons + chatToggleBtn + chatPanel;
+}
+
+function renderPelanggan() {
+  var items = shared.items, cart = state.cart, orders = shared.orders;
+  var t0 = computeCartTotals();
+  var cartList = t0.cartList, subtotal = t0.subtotal, isOutOfZone = t0.isOutOfZone, ongkir = t0.ongkir, total = t0.total;
+  var myOrder = orders.filter(function (o) { return o.id === state.lastOrderId; })[0];
+
+  if (state.pelangganScreen === "confirmed") {
+    var statusBlock = "";
+    var mapBlock = "";
+    var commsBlock = "";
+    if (myOrder) {
+      statusBlock =
+        card(
+          '<p style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;margin:0 0 8px 0;color:' + COLORS.muted + ';">Status pesanan</p>' +
+          badge(STATUS_LABEL[myOrder.status], STATUS_COLOR[myOrder.status]) +
+          (myOrder.kurir !== "-" ? '<p style="font-size:12px;margin:8px 0 0 0;color:' + COLORS.text + ';">Diambil oleh kurir: <b>' + myOrder.kurir + "</b></p>" : ""),
+          "padding:14px;margin-bottom:12px;"
+        );
+      mapBlock =
+        '<p style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;margin:0 0 6px 0;color:' + COLORS.muted + ';">Lacak Lokasi Pengantaran</p>' +
+        '<div id="map-status" style="width:100%;height:180px;border-radius:12px;margin-bottom:6px;position:relative;z-index:1;"></div>' +
+        '<p id="status-map-info" style="font-size:11px;margin:0 0 12px 0;color:' + COLORS.muted + ';">Memuat peta...</p>';
+      setTimeout(function () { initStatusMap(myOrder); }, 100);
+
+      if (myOrder.kurir !== "-") {
+        var kurirAkunData = shared.kurirAkun.filter(function (k) { return k.nama === myOrder.kurir; })[0];
+        commsBlock =
+          '<p style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;margin:0 0 6px 0;color:' + COLORS.muted + ';">Hubungi Kurir</p>' +
+          card('<div style="padding:14px;">' + renderCommsBox(myOrder, "pelanggan", state.currentUser, myOrder.kurir, kurirAkunData ? kurirAkunData.telepon : "") + '</div>', "margin-bottom:12px;");
+      }
+    }
+    return (
+      '<div style="min-height:100vh;background:' + COLORS.bg + ';">' +
+        topBar("Pesanan Terkirim", "Pelanggan: " + state.currentUser, true, COLORS.accent) +
+        '<div style="padding:16px;">' +
+          card(
+            icon("CheckCircle2", { size: 36, color: COLORS.primary, style: "display:block;margin:0 auto 12px auto;" }) +
+            '<p style="font-family:monospace;font-size:12px;margin:0 0 4px 0;text-align:center;color:' + COLORS.muted + ';">' + state.lastOrderId + "</p>" +
+            '<p style="font-size:15px;font-weight:600;margin:0 0 4px 0;text-align:center;color:' + COLORS.ink + ';">Kurir sedang memproses pesananmu</p>' +
+            '<p style="font-size:12px;margin:0;text-align:center;color:' + COLORS.muted + ';">Total dibayar: ' + rupiah(myOrder ? myOrder.total : 0) + "</p>",
+            "padding:32px 16px;margin-bottom:12px;"
+          ) +
+          statusBlock +
+          mapBlock +
+          commsBlock +
+          '<button onclick="pesanLagi()" style="width:100%;padding:12px;border-radius:8px;border:none;font-size:13px;font-weight:600;background:' + COLORS.primary + ';color:#fff;">Pesan Belanjaan Lain</button>' +
+        "</div>" +
+      "</div>"
+    );
+  }
+
+  if (state.pelangganScreen === "checkout") {
+    var cartRows = cartList.map(function (it) {
+      return '<div style="display:flex;justify-content:space-between;font-size:13px;padding:4px 0;color:' + COLORS.text + ';"><span>' + it.nama + " x" + cart[it.id] + '</span><span style="font-family:monospace;">' + rupiah(it.harga * cart[it.id]) + "</span></div>";
+    }).join("");
+
+    setTimeout(initMapPicker, 100);
+
+    return (
+      '<div style="min-height:100vh;background:' + COLORS.bg + ';padding-bottom:40px;">' +
+        topBar("Checkout & Lokasi", "Pelanggan: " + state.currentUser, true, COLORS.accent, "backToMenu()") +
+        '<div style="padding:16px;">' +
+          card('<div style="padding:14px;">' + cartRows + "</div>", "margin-bottom:12px;") +
+          '<p style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;margin:0 0 6px 0;color:' + COLORS.muted + ';">Nomor WhatsApp/Telepon Anda</p>' +
+          '<input type="tel" id="checkout-telepon" value="' + (state.checkoutTelepon || "").replace(/"/g, "&quot;") + '" oninput="state.checkoutTelepon=this.value;saveState();" placeholder="Contoh: 081234567890" style="width:100%;padding:10px;border-radius:8px;border:1px solid ' + COLORS.line + ';font-size:13px;margin-bottom:16px;color:' + COLORS.ink + ';" />' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">' +
+            '<p style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;margin:0;color:' + COLORS.muted + ';">Pilih Titik Antar di Peta</p>' +
+            '<button onclick="deteksiLokasiGPS()" style="padding:6px 10px;border-radius:6px;border:1px solid ' + COLORS.primary + ';background:#fff;color:' + COLORS.primary + ';font-size:11px;font-weight:600;display:flex;align-items:center;gap:4px;">' + icon("Navigation", {size:12}) + ' Lokasi Saya Otomatis</button>' +
+          '</div>' +
+          '<div id="map" style="position:relative;z-index:1;"></div>' +
+          '<p style="font-size:11px;color:' + COLORS.muted + ';margin:0 0 12px 0;">Geser/klik peta atau gunakan tombol otomatis untuk menentukan titik rumahmu. Titik ini yang akan dilihat kurir saat mengantar.</p>' +
+          '<div id="checkout-warning">' + renderWarningZonaHtml(isOutOfZone) + '</div>' +
+          '<p style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;margin:0 0 8px 0;color:' + COLORS.muted + ';">Zona Pengantaran</p>' +
+          '<div id="checkout-zona" style="display:flex;gap:6px;margin-bottom:16px;">' + renderZonaButtonsHtml() + "</div>" +
+          card(
+            '<div style="padding:14px;">' +
+            '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;color:' + COLORS.text + ';"><span>Subtotal</span><span style="font-family:monospace;">' + rupiah(subtotal) + "</span></div>" +
+            '<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:8px;color:' + COLORS.text + ';"><span id="sum-ongkir-label">Ongkir (' + (isOutOfZone ? 'Luar Zona' : ZONE_INFO[state.zona].short) + ')</span><span id="sum-ongkir-value" style="font-family:monospace;">' + (isOutOfZone ? '-' : rupiah(ongkir)) + "</span></div>" +
+            '<div style="display:flex;justify-content:space-between;font-size:15px;font-weight:600;padding-top:8px;border-top:1px dashed ' + COLORS.line + ';color:' + COLORS.ink + ';"><span>Total</span><span id="sum-total-value" style="font-family:monospace;">' + rupiah(total) + "</span></div>" +
+            "</div>",
+            "margin-bottom:16px;"
+          ) +
+          '<button id="checkout-confirm-btn" onclick="doCheckout()" ' + (cartList.length === 0 || isOutOfZone ? "disabled" : "") + ' style="width:100%;padding:12px;border-radius:8px;border:none;font-size:13px;font-weight:600;background:' + COLORS.accent + ';color:' + COLORS.ink + ';">Konfirmasi & Pesan Sekarang</button>' +
+        "</div>" +
+      "</div>"
+    );
+  }
+
+  var itemRows = items.map(function (it) {
+    var qty = cart[it.id] || 0;
+    var controls = qty === 0
+      ? '<button onclick="ubahQty(\'' + it.id + '\',1)" style="width:32px;height:32px;border-radius:999px;border:none;display:flex;align-items:center;justify-content:center;background:' + COLORS.primary + ';">' + icon("Plus", { size: 15, color: "#fff" }) + "</button>"
+      : '<div style="display:flex;align-items:center;gap:10px;">' +
+          '<button onclick="ubahQty(\'' + it.id + '\',-1)" style="width:28px;height:28px;border-radius:999px;border:1px solid ' + COLORS.line + ';background:transparent;display:flex;align-items:center;justify-content:center;">' + icon("Minus", { size: 13, color: COLORS.ink }) + "</button>" +
+          '<span style="font-family:monospace;font-size:13px;font-weight:600;width:16px;text-align:center;color:' + COLORS.ink + ';">' + qty + "</span>" +
+          '<button onclick="ubahQty(\'' + it.id + '\',1)" style="width:28px;height:28px;border-radius:999px;border:none;background:' + COLORS.primary + ';display:flex;align-items:center;justify-content:center;">' + icon("Plus", { size: 13, color: "#fff" }) + "</button>" +
+        "</div>";
+    return card(
+      '<div style="padding:14px;display:flex;align-items:center;justify-content:space-between;">' +
+        '<div><p style="font-size:14px;font-weight:500;margin:0;color:' + COLORS.ink + ';">' + it.nama + '</p><p style="font-family:monospace;font-size:12px;margin:2px 0 0 0;color:' + COLORS.muted + ';">' + rupiah(it.harga) + " / " + it.satuan + "</p></div>" +
+        controls +
+      "</div>",
+      "margin-bottom:10px;"
+    );
+  }).join("");
+
+  var cartBar = cartList.length > 0
+    ? '<div style="position:fixed;bottom:0;left:0;right:0;padding:16px;background:linear-gradient(to top, rgba(250,246,235,0.95), rgba(250,246,235,0));">' +
+        '<button onclick="goCheckout()" style="width:100%;padding:14px;border-radius:14px;border:none;font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 4px 16px rgba(0,0,0,0.15);background:' + COLORS.accent + ';color:' + COLORS.ink + ';">' +
+          icon("ShoppingCart", { size: 16 }) + " Lihat Keranjang &middot; " + rupiah(subtotal) +
+        "</button>" +
+      "</div>"
+    : "";
+
+  return (
+    '<div style="min-height:100vh;padding-bottom:96px;background:' + COLORS.bg + ';">' +
+      topBar("Pasar Tanjung Enim", "Pelanggan: " + state.currentUser, true, COLORS.accent) +
+      '<div style="padding:16px;">' + itemRows + "</div>" +
+      cartBar +
+    "</div>"
+  );
+}
+
+var mapInstance = null;
+function initMapPicker() {
+  var container = document.getElementById('map');
+  if (!container) return;
+  if (mapInstance) {
+    mapInstance.remove();
+    mapInstance = null;
+  }
+  mapInstance = L.map('map').setView([state.selectedLat, state.selectedLng], 14);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap'
+  }).addTo(mapInstance);
+
+  var marker = L.marker([state.selectedLat, state.selectedLng], {draggable: true}).addTo(mapInstance);
+  
+  marker.on('dragend', function(e) {
+    var pos = marker.getLatLng();
+    state.selectedLat = pos.lat;
+    state.selectedLng = pos.lng;
+    updateZonaOtomatis(pos.lat, pos.lng);
+    refreshCheckoutUI();
+  });
+
+  mapInstance.on('click', function(e) {
+    marker.setLatLng(e.latlng);
+    state.selectedLat = e.latlng.lat;
+    state.selectedLng = e.latlng.lng;
+    updateZonaOtomatis(e.latlng.lat, e.latlng.lng);
+    refreshCheckoutUI();
+  });
+
+  // Perbaikan bug tampilan: leaflet kadang salah hitung ukuran saat container baru dirender
+  setTimeout(function () { if (mapInstance) mapInstance.invalidateSize(); }, 200);
+}
+
+// Peta status pesanan di sisi pelanggan: menampilkan titik antar + posisi kurir (jika sudah dibagikan)
+function initStatusMap(order) {
+  var container = document.getElementById('map-status');
+  if (!container || !order) return;
+  if (statusMapInstance) {
+    statusMapInstance.remove();
+    statusMapInstance = null;
+  }
+  statusMapInstance = L.map('map-status', { zoomControl: false }).setView([order.lat, order.lng], 15);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap'
+  }).addTo(statusMapInstance);
+
+  var destIcon = L.divIcon({
+    html: '<div style="background:' + COLORS.accent + ';width:16px;height:16px;border-radius:50%;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);"></div>',
+    className: '', iconSize: [16, 16], iconAnchor: [8, 8]
+  });
+  L.marker([order.lat, order.lng], { icon: destIcon }).addTo(statusMapInstance).bindPopup('Lokasi Antarmu');
+
+  function drawKurir() {
+    var latest = shared.orders.filter(function (o) { return o.id === order.id; })[0];
+    var infoEl = document.getElementById('status-map-info');
+    if (!latest) return;
+    if (latest.kurirLat != null && latest.kurirLng != null && (latest.status === 'diantar' || latest.status === 'sedang_belanja')) {
+      var bikeIcon = L.divIcon({
+        html: '<div style="background:' + COLORS.primary + ';width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);">' + icon('Bike', { size: 14, color: '#fff' }) + '</div>',
+        className: '', iconSize: [26, 26], iconAnchor: [13, 13]
+      });
+      if (!statusMapInstance._kurirMarker) {
+        statusMapInstance._kurirMarker = L.marker([latest.kurirLat, latest.kurirLng], { icon: bikeIcon }).addTo(statusMapInstance).bindPopup('Posisi Kurir');
+      } else {
+        statusMapInstance._kurirMarker.setLatLng([latest.kurirLat, latest.kurirLng]);
+      }
+      var bounds = L.latLngBounds([[order.lat, order.lng], [latest.kurirLat, latest.kurirLng]]);
+      statusMapInstance.fitBounds(bounds, { padding: [30, 30] });
+      var jarak = haversineKm(latest.kurirLat, latest.kurirLng, order.lat, order.lng);
+      if (infoEl) infoEl.textContent = 'Kurir sekitar ' + jarak.toFixed(1) + ' km dari lokasimu, sedang menuju rumahmu.';
+    } else if (infoEl) {
+      infoEl.textContent = latest.status === 'menunggu_kurir' ? 'Menunggu kurir mengambil pesanan...' : 'Lokasi kurir belum dibagikan.';
+    }
+  }
+
+  drawKurir();
+  statusPollInterval = setInterval(drawKurir, 4000);
+}
+
+// Peta di sisi kurir: menampilkan titik pelanggan + posisi kurir, dan membagikan lokasi ke pelanggan
+function initKurirMap(order) {
+  var container = document.getElementById('map-kurir');
+  if (!container || !order) return;
+  if (kurirMapInstance) {
+    kurirMapInstance.remove();
+    kurirMapInstance = null;
+  }
+  kurirMapInstance = L.map('map-kurir', { zoomControl: false }).setView([order.lat, order.lng], 15);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap'
+  }).addTo(kurirMapInstance);
+
+  var destIcon = L.divIcon({
+    html: '<div style="background:' + COLORS.accent + ';width:16px;height:16px;border-radius:50%;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);"></div>',
+    className: '', iconSize: [16, 16], iconAnchor: [8, 8]
+  });
+  L.marker([order.lat, order.lng], { icon: destIcon }).addTo(kurirMapInstance).bindPopup('Lokasi Pelanggan');
+
+  if (order.kurirLat != null && order.kurirLng != null) {
+    drawKurirOnMap(order);
+  }
+}
+
+function drawKurirOnMap(order) {
+  if (!kurirMapInstance || order.kurirLat == null) return;
+  var bikeIcon = L.divIcon({
+    html: '<div style="background:' + COLORS.primary + ';width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);">' + icon('Bike', { size: 14, color: '#fff' }) + '</div>',
+    className: '', iconSize: [26, 26], iconAnchor: [13, 13]
+  });
+  if (!kurirMapInstance._kurirMarker) {
+    kurirMapInstance._kurirMarker = L.marker([order.kurirLat, order.kurirLng], { icon: bikeIcon }).addTo(kurirMapInstance).bindPopup('Posisi Saya');
+  } else {
+    kurirMapInstance._kurirMarker.setLatLng([order.kurirLat, order.kurirLng]);
+  }
+  var bounds = L.latLngBounds([[order.lat, order.lng], [order.kurirLat, order.kurirLng]]);
+  kurirMapInstance.fitBounds(bounds, { padding: [30, 30] });
+  var jarak = haversineKm(order.kurirLat, order.kurirLng, order.lat, order.lng);
+  var infoEl = document.getElementById('kurir-map-info');
+  if (infoEl) infoEl.textContent = 'Jarak ke lokasi pelanggan: sekitar ' + jarak.toFixed(1) + ' km. Lokasimu sudah tampil di layar pelanggan.';
+}
+
+function shareKurirLocation(orderId) {
+  if (!navigator.geolocation) {
+    alert('Perangkat tidak mendukung GPS.');
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(function (pos) {
+    var order = shared.orders.filter(function (o) { return o.id === orderId; })[0];
+    if (!order) return;
+    order.kurirLat = pos.coords.latitude;
+    order.kurirLng = pos.coords.longitude;
+    saveShared();
+  }, function () {
+    alert('Gagal mengambil lokasi. Pastikan GPS & izin lokasi diizinkan.');
+  }, { enableHighAccuracy: true });
+}
+
+function renderKurir() {
+  var kurirName = state.currentUser || "Adi Kurir";
+  var orders = shared.orders, komisiRiwayat = shared.komisiRiwayat;
+  var pool = orders.filter(function (o) { return o.status === "menunggu_kurir"; });
+  var activeOrder = orders.filter(function (o) { return o.kurir === kurirName && (o.status === "sedang_belanja" || o.status === "diantar"); })[0];
+  var komisiHariIni = komisiRiwayat.filter(function (r) { return r.kurir === kurirName; }).reduce(function (s, r) { return s + r.komisi; }, 0);
+  var allChecked = activeOrder ? activeOrder.items.every(function (_, i) { return !!state.checked[i]; }) : false;
+
+  var tabsHtml = [{ key: "order", label: "Order Masuk", icon: "Package" }, { key: "riwayat", label: "Riwayat Komisi", icon: "Clock" }].map(function (t) {
+    var active = state.kurirTab === t.key;
+    return '<button onclick="setKurirTab(\'' + t.key + '\')" style="display:flex;align-items:center;gap:6px;padding-bottom:10px;font-size:13px;font-weight:500;border:none;background:none;position:relative;color:' + (active ? COLORS.primary : COLORS.muted) + ';border-bottom:2px solid ' + (active ? COLORS.primary : "transparent") + ';margin-right:20px;">' + icon(t.icon, { size: 14 }) + t.label + "</button>";
+  }).join("");
+
+  var body = "";
+  if (state.kurirTab === "order") {
+    if (activeOrder) {
+      var inner = "";
+      if (activeOrder.status === "sedang_belanja") {
+        var checklist = activeOrder.items.map(function (it, i) {
+          var isChecked = !!state.checked[i];
+          return '<label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #F0EBDA;cursor:pointer;">' +
+            '<input type="checkbox" ' + (isChecked ? "checked" : "") + ' onchange="toggleChecked(' + i + ')" style="width:16px;height:16px;accent-color:' + COLORS.primary + ';" />' +
+            '<span style="font-size:13px;flex:1;color:' + (isChecked ? COLORS.muted : COLORS.ink) + ';text-decoration:' + (isChecked ? "line-through" : "none") + ';">' + it.nama + "</span>" +
+            '<span style="font-size:12px;color:' + COLORS.muted + ';">' + it.qty + "</span>" +
+          "</label>";
+        }).join("");
+        inner =
+          '<p style="font-size:12px;margin:0 0 8px 0;display:flex;align-items:center;gap:4px;color:' + COLORS.muted + ';">' + icon("ShoppingBasket", { size: 13 }) + " Checklist Belanja Pasar</p>" +
+          checklist +
+          '<button ' + (allChecked ? "" : "disabled") + ' onclick="lanjutAntar(\'' + activeOrder.id + '\')" style="width:100%;margin-top:12px;padding:10px;border-radius:8px;border:none;font-size:13px;font-weight:600;color:#fff;background:' + COLORS.primary + ';">Selesai Belanja, Lanjut Antar</button>';
+      } else {
+        inner =
+          '<div style="border-radius:8px;padding:12px;margin-bottom:10px;display:flex;align-items:flex-start;gap:8px;background:#F2EDDD;">' +
+            icon("Navigation", { size: 16, color: COLORS.primary, style: "margin-top:2px;" }) +
+            '<div><p style="font-size:13px;font-weight:500;margin:0;color:' + COLORS.ink + ';">Alamat Pelanggan: ' + activeOrder.alamat + '</p>' +
+            '<a href="https://maps.google.com/?q=' + activeOrder.lat + ',' + activeOrder.lng + '" target="_blank" style="font-size:12px;color:' + COLORS.primary + ';font-weight:600;text-decoration:underline;display:inline-block;margin-top:4px;">Buka Navigasi Google Maps &rarr;</a></div>' +
+          "</div>" +
+          '<div id="map-kurir" style="width:100%;height:180px;border-radius:12px;margin-bottom:6px;position:relative;z-index:1;"></div>' +
+          '<p id="kurir-map-info" style="font-size:11px;margin:0 0 10px 0;color:' + COLORS.muted + ';">Titik kuning = lokasi pelanggan. Tekan tombol di bawah untuk membagikan posisimu.</p>' +
+          '<button onclick="shareKurirLocation(\'' + activeOrder.id + '\')" style="width:100%;margin-bottom:10px;padding:10px;border-radius:8px;border:1px solid ' + COLORS.primary + ';background:#fff;color:' + COLORS.primary + ';font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">' + icon("Navigation", { size: 13 }) + ' Bagikan / Update Lokasi Saya</button>' +
+          '<button onclick="tandaiDiantar(\'' + activeOrder.id + '\')" style="width:100%;padding:10px;border-radius:8px;border:none;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;background:' + COLORS.accent + ';color:' + COLORS.ink + ';">' + icon("CheckCircle2", { size: 15 }) + " Tandai Selesai / Sampai Tujuan</button>";
+        setTimeout(function () { initKurirMap(activeOrder); }, 100);
+      }
+      body += card(
+        '<div style="padding:16px;">' +
+          '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">' + badge("Tugas Aktif &middot; " + activeOrder.id, COLORS.accent) + badge(ZONE_INFO[activeOrder.zona].short, ZONE_INFO[activeOrder.zona].color) + "</div>" +
+          inner +
+        "</div>",
+        "margin-bottom:12px;"
+      );
+      body += card(
+        '<div style="padding:14px;">' +
+          '<p style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;margin:0 0 8px 0;color:' + COLORS.muted + ';">Hubungi Pelanggan</p>' +
+          renderCommsBox(activeOrder, "kurir", kurirName, activeOrder.pelanggan, activeOrder.pelangganTelepon) +
+        "</div>",
+        "margin-bottom:16px;"
+      );
+    } else {
+      if (pool.length === 0) {
+        body += '<div style="text-align:center;padding:48px 0;color:' + COLORS.muted + ';">' + icon("Package", { size: 28, style: "opacity:0.5;" }) + '<p style="font-size:13px;">Belum ada order masuk di Tanjung Enim</p></div>';
+      } else {
+        body += '<p style="font-size:12px;margin-bottom:12px;text-transform:uppercase;letter-spacing:0.05em;color:' + COLORS.muted + ';">Order Tersedia &middot; ' + pool.length + "</p>";
+        body += pool.map(function (o) {
+          var itemLines = o.items.map(function (it) {
+            return '<div style="display:flex;justify-content:space-between;font-size:13px;padding:2px 0;color:' + COLORS.text + ';"><span>' + it.nama + '</span><span style="color:' + COLORS.muted + ';">' + it.qty + "</span></div>";
+          }).join("");
+          return card(
+            '<div style="padding:16px;">' +
+              '<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px;">' +
+                '<div><p style="font-family:monospace;font-size:11px;margin:0;color:' + COLORS.muted + ';">' + o.id + '</p><h3 style="font-size:15px;font-weight:600;font-family:\'Fraunces\',serif;margin:2px 0 0 0;color:' + COLORS.ink + ';">' + o.pelanggan + "</h3></div>" +
+                badge(ZONE_INFO[o.zona].short, ZONE_INFO[o.zona].color) +
+              "</div>" +
+              '<div style="display:flex;align-items:flex-start;gap:6px;font-size:13px;margin-bottom:12px;color:' + COLORS.text + ';">' + icon("MapPin", { size: 14, style: "margin-top:2px;" }) + "<span>" + o.alamat + "</span></div>" +
+              '<div style="border-top:1px dashed ' + COLORS.line + ';padding-top:10px;margin-bottom:12px;">' + itemLines + "</div>" +
+              '<div style="display:flex;align-items:center;justify-content:space-between;">' +
+                '<p style="font-family:monospace;font-weight:600;font-size:15px;margin:0;color:' + COLORS.ink + ';">' + rupiah(o.total) + "</p>" +
+                '<button onclick="ambilOrder(\'' + o.id + '\')" style="padding:8px 16px;border-radius:8px;border:none;font-size:13px;font-weight:600;color:#fff;background:' + COLORS.primary + ';">Ambil Order</button>' +
+              "</div>" +
+            "</div>",
+            "margin-bottom:12px;"
+          );
+        }).join("");
+      }
+    }
+  } else {
+    var mine = komisiRiwayat.filter(function (r) { return r.kurir === kurirName; });
+    if (mine.length === 0) {
+      body = '<p style="text-align:center;padding:48px 0;font-size:13px;color:' + COLORS.muted + ';">Belum ada riwayat komisi</p>';
+    } else {
+      body = mine.map(function (r) {
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid ' + COLORS.line + ';">' +
+          '<div><p style="font-size:13px;font-weight:500;margin:0;color:' + COLORS.ink + ';">' + r.pelanggan + '</p><p style="font-family:monospace;font-size:11px;margin:2px 0 0 0;color:' + COLORS.muted + ';">' + r.id + "</p></div>" +
+          '<p style="font-family:monospace;font-size:13px;font-weight:600;margin:0;color:' + COLORS.primary + ';">+' + rupiah(r.komisi) + "</p>" +
+        "</div>";
+      }).join("");
+    }
+  }
+
+  return (
+    '<div style="min-height:100vh;background:' + COLORS.bg + ';">' +
+      topBar("Kurir: " + kurirName, "Mitra Lapangan", true, COLORS.primary) +
+      '<div style="padding:0 16px;margin-top:-4px;">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">' +
+          '<button onclick="toggleAktif()" style="display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:600;border:none;background:' + (state.kurirAktif ? COLORS.accent : COLORS.line) + ';color:' + (state.kurirAktif ? COLORS.ink : COLORS.muted) + ';">' + icon("Power", { size: 13 }) + (state.kurirAktif ? "Status: Siap Kerja" : "Status: Istirahat") + "</button>" +
+          '<div style="display:flex;align-items:center;gap:6px;font-size:13px;color:' + COLORS.ink + ';">' + icon("Wallet", { size: 14, color: COLORS.accent }) + '<span style="font-family:monospace;font-weight:600;">' + rupiah(komisiHariIni) + "</span></div>" +
+        "</div>" +
+      "</div>" +
+      '<div style="display:flex;padding:4px 16px 0 16px;border-bottom:1px solid ' + COLORS.line + ';">' + tabsHtml + "</div>" +
+      '<div style="padding:16px;">' + body + "</div>" +
+    "</div>"
+  );
+}
+
+function renderOwner() {
+  if (!state.ownerDraftItems) {
+    state.ownerDraftItems = JSON.parse(JSON.stringify(shared.items));
+  }
+  var orders = shared.orders, komisiRiwayat = shared.komisiRiwayat;
+  var omzetTotal = orders.reduce(function (s, o) { return s + o.total; }, 0);
+  var kurirNames = komisiRiwayat.map(function (r) { return r.kurir; }).filter(function (v, i, arr) { return arr.indexOf(v) === i; });
+  var komisiPerKurir = kurirNames.map(function (nama) {
+    var list = komisiRiwayat.filter(function (r) { return r.kurir === nama; });
+    return { nama: nama, order: list.length, komisi: list.reduce(function (s, r) { return s + r.komisi; }, 0), dibayar: list.length > 0 && list.every(function (r) { return r.dibayar; }) };
+  });
+
+  var TABS = [
+    { key: "ringkasan", label: "Ringkasan", icon: "LayoutGrid" },
+    { key: "harga", label: "Kelola Harga", icon: "Tag" },
+    { key: "kurir", label: "Kelola Kurir", icon: "Bike" },
+    { key: "monitor", label: "Monitor Order", icon: "Radar" },
+    { key: "komisi", label: "Komisi Kurir", icon: "Wallet" },
+  ];
+  var tabsHtml = TABS.map(function (t) {
+    var active = state.ownerTab === t.key;
+    return '<button onclick="setOwnerTab(\'' + t.key + '\')" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;padding-bottom:10px;font-size:11px;font-weight:500;border:none;background:none;color:' + (active ? COLORS.primary : COLORS.muted) + ';border-bottom:2px solid ' + (active ? COLORS.primary : "transparent") + ';">' + icon(t.icon, { size: 16 }) + t.label + "</button>";
+  }).join("");
+
+  var body = "";
+  if (state.ownerTab === "ringkasan") {
+    var recentRows = orders.length === 0
+      ? '<p style="font-size:13px;padding:24px 0;text-align:center;color:' + COLORS.muted + ';">Belum ada order masuk</p>'
+      : orders.slice().reverse().slice(0, 5).map(function (o) {
+          return '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid ' + COLORS.line + ';">' +
+            '<div><p style="font-size:13px;font-weight:500;margin:0;color:' + COLORS.ink + ';">' + o.pelanggan + '</p><p style="font-family:monospace;font-size:11px;margin:2px 0 0 0;color:' + COLORS.muted + ';">' + o.id + "</p></div>" +
+            badge(STATUS_LABEL[o.status], STATUS_COLOR[o.status]) +
+          "</div>";
+        }).join("");
+
+    body += card(
+      '<div style="padding:16px;">' +
+        '<p style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:' + COLORS.muted + ';margin:0 0 4px 0;">Total Omzet Pasar</p>' +
+        '<h2 style="font-size:22px;font-weight:600;font-family:\'Fraunces\',serif;margin:0 0 16px 0;color:' + COLORS.ink + ';">' + rupiah(omzetTotal) + '</h2>' +
+        '<p style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:' + COLORS.muted + ';margin:0 0 8px 0;">Pesanan Terbaru</p>' +
+        recentRows +
+      '</div>',
+      'margin-bottom:16px;'
+    );
+  } else if (state.ownerTab === "harga") {
+    var draftRows = state.ownerDraftItems.map(function(it) {
+      return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid ' + COLORS.line + ';">' +
+        '<span style="font-size:13px;color:' + COLORS.ink + ';flex:1;">' + it.nama + ' (' + it.satuan + ')</span>' +
+        '<input type="number" value="' + it.harga + '" onchange="updateDraftHarga(\'' + it.id + '\', this.value)" style="width:110px;padding:6px;border-radius:6px;border:1px solid ' + COLORS.line + ';text-align:right;font-family:monospace;font-size:13px;" />' +
+      '</div>';
+    }).join("");
+
+    body += card(
+      '<div style="padding:16px;">' +
+        '<p style="font-size:13px;font-weight:600;margin:0 0 12px 0;color:' + COLORS.ink + ';">Pengaturan Harga Barang Pasar</p>' +
+        draftRows +
+        '<button onclick="saveHargaMaster()" style="width:100%;margin-top:16px;padding:10px;border-radius:8px;border:none;font-size:13px;font-weight:600;background:' + COLORS.primary + ';color:#fff;">Simpan Perubahan Harga</button>' +
+      '</div>',
+      'margin-bottom:16px;'
+    );
+  } else if (state.ownerTab === "kurir") {
+    var kurirRows = shared.kurirAkun.map(function (k, idx) {
+      return '<div style="padding:10px 0;border-bottom:1px solid ' + COLORS.line + ';">' +
+        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">' +
+          '<input type="text" value="' + k.nama + '" onchange="updateKurirAkun(' + idx + ', \'nama\', this.value)" placeholder="Nama kurir" style="flex:1;min-width:0;padding:8px;border-radius:6px;border:1px solid ' + COLORS.line + ';font-size:13px;color:' + COLORS.ink + ';" />' +
+          '<input type="text" value="' + k.pin + '" onchange="updateKurirAkun(' + idx + ', \'pin\', this.value)" placeholder="PIN" style="width:88px;padding:8px;border-radius:6px;border:1px solid ' + COLORS.line + ';font-family:monospace;font-size:13px;letter-spacing:0.04em;color:' + COLORS.ink + ';" />' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:6px;">' +
+          '<input type="tel" value="' + (k.telepon || "") + '" onchange="updateKurirAkun(' + idx + ', \'telepon\', this.value)" placeholder="No. WhatsApp kurir" style="flex:1;min-width:0;padding:8px;border-radius:6px;border:1px solid ' + COLORS.line + ';font-size:13px;color:' + COLORS.ink + ';" />' +
+          '<button onclick="toggleKurirAktif(' + idx + ')" style="padding:8px 10px;border-radius:999px;border:none;font-size:11px;font-weight:600;white-space:nowrap;background:' + (k.aktif ? COLORS.primary + "1A" : COLORS.line) + ';color:' + (k.aktif ? COLORS.primary : COLORS.muted) + ';">' + (k.aktif ? "Aktif" : "Nonaktif") + "</button>" +
+          '<button onclick="hapusKurirAkun(' + idx + ')" style="padding:8px 10px;border-radius:6px;border:1px solid #E3B2A2;background:#fff;color:#9C3B1F;font-size:11px;font-weight:600;">Hapus</button>' +
+        '</div>' +
+      "</div>";
+    }).join("");
+
+    body += card(
+      '<div style="padding:16px;">' +
+        '<p style="font-size:13px;font-weight:600;margin:0 0 4px 0;color:' + COLORS.ink + ';">Kelola Akun Kurir</p>' +
+        '<p style="font-size:11px;margin:0 0 12px 0;color:' + COLORS.muted + ';">Tiap kurir login pakai nama + PIN masing-masing. Nonaktifkan atau hapus PIN kalau kurir sudah tidak bekerja lagi.</p>' +
+        kurirRows +
+        '<button onclick="tambahKurirAkun()" style="width:100%;margin-top:14px;padding:10px;border-radius:8px;border:1px dashed ' + COLORS.primary + ';background:#fff;color:' + COLORS.primary + ';font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:6px;">' + icon("Plus", { size: 14 }) + " Tambah Kurir Baru</button>" +
+      "</div>",
+      "margin-bottom:16px;"
+    );
+  } else if (state.ownerTab === "monitor") {
+    body += orders.map(function(o) {
+      return card(
+        '<div style="padding:14px;">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">' +
+            '<span style="font-family:monospace;font-size:11px;color:' + COLORS.muted + ';">' + o.id + ' &middot; ' + o.pelanggan + '</span>' +
+            badge(STATUS_LABEL[o.status], STATUS_COLOR[o.status]) +
+          '</div>' +
+          '<p style="font-size:12px;margin:0 0 4px 0;color:' + COLORS.text + ';">Kurir: <b>' + (o.kurir || '-') + '</b></p>' +
+          '<p style="font-family:monospace;font-size:13px;font-weight:600;margin:0;color:' + COLORS.ink + ';">' + rupiah(o.total) + '</p>' +
+        '</div>',
+        'margin-bottom:10px;'
+      );
+    }).join("");
+  } else if (state.ownerTab === "komisi") {
+    body += komisiPerKurir.map(function(k) {
+      return card(
+        '<div style="padding:14px;display:flex;justify-content:space-between;align-items:center;">' +
+          '<div>' +
+            '<p style="font-size:14px;font-weight:600;margin:0;color:' + COLORS.ink + ';">' + k.nama + '</p>' +
+            '<p style="font-size:12px;margin:2px 0 0 0;color:' + COLORS.muted + ';">Selesai: ' + k.order + ' order</p>' +
+          '</div>' +
+          '<div style="text-align:right;">' +
+            '<p style="font-family:monospace;font-size:14px;font-weight:600;margin:0;color:' + COLORS.primary + ';">' + rupiah(k.komisi) + '</p>' +
+            badge(k.dibayar ? "Lunas" : "Belum Lunas", k.dibayar ? COLORS.primary : COLORS.accent) +
+          '</div>' +
+        '</div>',
+        'margin-bottom:10px;'
+      );
+    }).join("");
+  }
+
+  return (
+    '<div style="min-height:100vh;background:' + COLORS.bg + ';padding-bottom:40px;">' +
+      topBar("Owner: " + state.currentUser, "Pengelola Pasar", true, COLORS.ink) +
+      '<div style="display:flex;background:#FFFDF6;border-bottom:1px solid ' + COLORS.line + ';padding-top:8px;">' + tabsHtml + '</div>' +
+      '<div style="padding:16px;">' + body + '</div>' +
+    '</div>'
+  );
+}
+
+function goBack() {
+  state.pelangganScreen = "menu";
+  saveState();
+  render();
+}
+
+function backToMenu() {
+  state.pelangganScreen = "menu";
+  saveState();
+  render();
+}
+
+function goCheckout() {
+  state.pelangganScreen = "checkout";
+  saveState();
+  render();
+}
+
+function pesanLagi() {
+  state.cart = {};
+  state.pelangganScreen = "menu";
+  state.lastOrderId = null;
+  saveState();
+  render();
+}
+
+function ubahQty(id, delta) {
+  var cur = state.cart[id] || 0;
+  var next = cur + delta;
+  if (next <= 0) {
+    delete state.cart[id];
+  } else {
+    state.cart[id] = next;
+  }
+  saveState();
+  render();
+}
+
+function setZona(z) {
+  state.zona = Number(z);
+  saveState();
+  refreshCheckoutUI();
+}
+
+function doCheckout() {
+  if (state.zona === null) {
+    alert("Lokasi Anda berada di luar Zona 3. Order tidak dapat diproses.");
+    return;
+  }
+
+  var teleponEl = document.getElementById("checkout-telepon");
+  var telepon = teleponEl ? teleponEl.value.trim() : "";
+  if (!telepon) {
+    alert("Mohon isi nomor WhatsApp/Telepon Anda dulu, supaya kurir bisa menghubungi.");
+    return;
+  }
+
+  var cartList = shared.items.filter(function(it) { return state.cart[it.id] > 0; });
+  var subtotal = cartList.reduce(function(s, it) { return s + it.harga * state.cart[it.id]; }, 0);
+  var ongkir = ZONE_INFO[state.zona].fee;
+  var total = subtotal + ongkir;
+  var orderId = "TE-" + Math.floor(100 + Math.random() * 900);
+
+  var orderItems = cartList.map(function(it) {
+    return { nama: it.nama, qty: state.cart[it.id] + " " + it.satuan };
+  });
+
+  shared.orders.unshift({
+    id: orderId,
+    pelanggan: state.currentUser,
+    pelangganTelepon: telepon,
+    alamat: "Titik Koordinat (" + state.selectedLat.toFixed(4) + ", " + state.selectedLng.toFixed(4) + ")",
+    zona: state.zona,
+    lat: state.selectedLat,
+    lng: state.selectedLng,
+    items: orderItems,
+    total: total,
+    status: "menunggu_kurir",
+    kurir: "-",
+    chat: []
+  });
+
+  state.lastOrderId = orderId;
+  state.cart = {};
+  state.checkoutTelepon = "";
+  state.pelangganScreen = "confirmed";
+  saveState();
+  saveShared();
+}
+
+function setKurirTab(t) {
+  state.kurirTab = t;
+  saveState();
+  render();
+}
+
+function toggleAktif() {
+  state.kurirAktif = !state.kurirAktif;
+  saveState();
+  render();
+}
+
+function toggleChecked(idx) {
+  state.checked[idx] = !state.checked[idx];
+  saveState();
+  render();
+}
+
+function ambilOrder(id) {
+  var ord = shared.orders.filter(function(o) { return o.id === id; })[0];
+  if (ord) {
+    ord.status = "sedang_belanja";
+    ord.kurir = state.currentUser;
+    state.checked = {};
+    saveState();
+    saveShared();
+  }
+}
+
+function lanjutAntar(id) {
+  var ord = shared.orders.filter(function(o) { return o.id === id; })[0];
+  if (ord) {
+    ord.status = "diantar";
+    saveShared();
+  }
+}
+
+function tandaiDiantar(id) {
+  var ord = shared.orders.filter(function(o) { return o.id === id; })[0];
+  if (ord) {
+    ord.status = "selesai";
+    var komisiNilai = Math.round(ord.total * 0.06);
+    shared.komisiRiwayat.unshift({
+      id: ord.id,
+      pelanggan: ord.pelanggan,
+      kurir: ord.kurir,
+      komisi: komisiNilai,
+      dibayar: true
+    });
+    saveShared();
+  }
+}
+
+// Mengirim pesan chat pada sebuah order (dipakai oleh pelanggan & kurir)
+function kirimChat(orderId, role, nama) {
+  var ord = shared.orders.filter(function (o) { return o.id === orderId; })[0];
+  if (!ord) return;
+  var inputEl = document.getElementById("chat-input-" + orderId);
+  var teks = inputEl ? inputEl.value.trim() : "";
+  if (!teks) return;
+  if (!ord.chat) ord.chat = [];
+  ord.chat.push({ role: role, nama: nama, teks: teks, waktu: Date.now() });
+  if (!state.chatDraft) state.chatDraft = {};
+  state.chatDraft[orderId] = "";
+  saveState();
+  saveShared();
+}
+
+function updateChatDraft(orderId, val) {
+  if (!state.chatDraft) state.chatDraft = {};
+  state.chatDraft[orderId] = val;
+}
+
+function toggleChatBox(orderId) {
+  if (!state.showChat) state.showChat = {};
+  state.showChat[orderId] = !state.showChat[orderId];
+  saveState();
+  render();
+}
+
+function normalizeTelepon(t) {
+  if (!t) return "";
+  var d = String(t).replace(/[^0-9]/g, "");
+  if (d.charAt(0) === "0") d = "62" + d.slice(1);
+  return d;
+}
+
+function setOwnerTab(t) {
+  state.ownerTab = t;
+  saveState();
+  render();
+}
+
+function updateDraftHarga(id, val) {
+  var item = state.ownerDraftItems.filter(function(it) { return it.id === id; })[0];
+  if (item) {
+    item.harga = Number(val);
+  }
+}
+
+function saveHargaMaster() {
+  shared.items = JSON.parse(JSON.stringify(state.ownerDraftItems));
+  saveShared();
+  alert("Harga pasar berhasil diperbarui!");
+}
+
+function updateKurirAkun(idx, field, val) {
+  if (!shared.kurirAkun[idx]) return;
+  shared.kurirAkun[idx][field] = (field === "pin" ? val.trim() : val);
+  saveShared();
+}
+
+function toggleKurirAktif(idx) {
+  if (!shared.kurirAkun[idx]) return;
+  shared.kurirAkun[idx].aktif = !shared.kurirAkun[idx].aktif;
+  saveShared();
+}
+
+function tambahKurirAkun() {
+  var nomor = shared.kurirAkun.length + 1;
+  var pinBaru = String(Math.floor(100000 + Math.random() * 900000));
+  shared.kurirAkun.push({ nama: "Kurir " + nomor, pin: pinBaru, aktif: true, telepon: "" });
+  saveShared();
+}
+
+function hapusKurirAkun(idx) {
+  if (!shared.kurirAkun[idx]) return;
+  if (!confirm("Hapus akun kurir \"" + shared.kurirAkun[idx].nama + "\"?")) return;
+  shared.kurirAkun.splice(idx, 1);
+  saveShared();
+}
+
+function render() {
+  var root = document.getElementById('root');
+  if (!root) return;
+  clearStatusPolling();
+  if (!state.role) {
+    root.innerHTML = renderRoleSelector();
+    return;
+  }
+  if (state.role === "pelanggan") {
+    root.innerHTML = renderPelanggan();
+  } else if (state.role === "kurir") {
+    root.innerHTML = renderKurir();
+  } else if (state.role === "owner") {
+    root.innerHTML = renderOwner();
+  }
+}
+
+startSharedSync();
+render();
+  </script>
+ </body>
+</html>
